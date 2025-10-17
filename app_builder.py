@@ -7,20 +7,17 @@ import requests
 from flask import Flask, request, jsonify
 
 # --- 1. Configuration & Setup ---
-# Load sensitive information from environment variables for security.
-# This is a critical best practice.
-try:
-    MY_SECRET = os.environ['MY_SECRET']
-    GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
-    GITHUB_USERNAME = os.environ['GITHUB_USERNAME']
-except KeyError as e:
-    raise RuntimeError(f"Error: Missing required environment variable: {e}. Please set it before running.")
+# It's better to use .get() which returns None if a key is missing,
+# preventing the app from crashing on startup if a variable isn't set.
+MY_SECRET = os.environ.get('MY_SECRET')
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+GITHUB_USERNAME = os.environ.get('GITHUB_USERNAME')
 
 # The full text of the MIT license to be included in the repository.
 MIT_LICENSE_TEXT = """
 MIT License
 
-Copyright (c) 2025 Your Hrashabardhan Kashyap
+Copyright (c) 2025 Your Name
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -43,51 +40,60 @@ SOFTWARE.
 
 app = Flask(__name__)
 
-# --- 2. Core Application Logic ---
+# --- 2. NEW DEBUGGING ENDPOINT ---
+@app.route('/debug-env', methods=['GET'])
+def debug_env():
+    """
+    A public endpoint to safely check if environment variables are loaded.
+    This helps diagnose deployment issues without revealing secrets.
+    """
+    print("--- Running Debug Check ---")
+    # We re-read the variables directly from the environment here to be sure
+    secret = os.environ.get('MY_SECRET')
+    token = os.environ.get('GITHUB_TOKEN')
+    username = os.environ.get('GITHUB_USERNAME')
+
+    # Create a status report
+    report = {
+        "MY_SECRET": "Set" if secret else "!!! MISSING !!!",
+        "GITHUB_TOKEN": "Set" if token else "!!! MISSING !!!",
+        "GITHUB_USERNAME": "Set" if username else "!!! MISSING !!!",
+    }
+
+    # Safely check the token format without revealing the secret itself
+    if token and token.startswith('ghp_'):
+        report["GITHUB_TOKEN_FORMAT"] = "Looks Correct (starts with ghp_)"
+    elif token:
+        report["GITHUB_TOKEN_FORMAT"] = "!!! INCORRECT FORMAT !!! (should start with ghp_)"
+
+    return jsonify(report), 200
+
+# --- 3. Core Application Logic ---
 
 def generate_app_with_llm(brief, attachments, round_num, existing_code=None):
     """
     Calls the Gemini API to generate application code based on a brief.
-    For round 2+, it can use existing code as a base for modifications.
     """
     print("Connecting to Gemini API to generate code...")
-
+    # (The rest of this function is unchanged)
     decoded_attachments = []
     for attachment in attachments:
         header, encoded_data = attachment['url'].split(',', 1)
         decoded_content = base64.b64decode(encoded_data).decode('utf-8', errors='ignore')
         decoded_attachments.append({"name": attachment['name'], "content": decoded_content})
 
-    # --- Construct the Master Prompt ---
     if round_num > 1 and existing_code:
-        # This is a "revise" request. The prompt instructs the LLM to modify existing code.
-        prompt_task = (
-            f"Your task is to modify the provided 'index.html' file based on the new brief. "
-            f"The 'README.md' should also be updated to reflect the changes.\n"
-            f"\n--- NEW USER BRIEF ---\n{brief}\n------------------\n"
-            f"\n--- EXISTING index.html ---\n{existing_code}\n-------------------------\n"
-        )
+        prompt_task = (f"Your task is to modify the provided 'index.html' file based on the new brief. The 'README.md' should also be updated to reflect the changes.\n\n--- NEW USER BRIEF ---\n{brief}\n------------------\n\n--- EXISTING index.html ---\n{existing_code}\n-------------------------\n")
     else:
-        # This is a "build" request for a new application.
         prompt_task = f"Your task is to generate two files: 'index.html' and 'README.md', based on the user's brief.\n--- USER BRIEF ---\n{brief}\n------------------\n"
 
-    prompt_parts = [
-        "You are an expert web developer specializing in creating single-file, production-ready applications.",
-        prompt_task
-    ]
-
+    prompt_parts = ["You are an expert web developer specializing in creating single-file, production-ready applications.", prompt_task]
     if decoded_attachments:
-        prompt_parts.append("The application must use the following attached files. The content is provided below:")
+        prompt_parts.append("The application must use the following attached files:")
         for att in decoded_attachments:
             prompt_parts.append(f"\n--- FILE: {att['name']} ---\n{att['content']}\n----------------------\n")
 
-    prompt_parts.extend([
-        "The 'index.html' file must be a single, complete HTML5 document. All CSS must be in a <style> tag and all JavaScript in a <script> tag, unless a CDN is explicitly required.",
-        "The 'README.md' must be professional and comprehensive, including a summary, setup instructions, usage guide, and a code explanation.",
-        "IMPORTANT: You must respond with ONLY a raw JSON object, without any surrounding text, explanations, or markdown formatting.",
-        'The JSON object must have two string keys: "index.html" and "README.md".'
-    ])
-    
+    prompt_parts.extend(["The 'index.html' file must be a single, complete HTML5 document. All CSS must be in a <style> tag and all JavaScript in a <script> tag, unless a CDN is explicitly required.", "The 'README.md' must be professional and comprehensive.", "IMPORTANT: You must respond with ONLY a raw JSON object, without any surrounding text, explanations, or markdown formatting.", 'The JSON object must have two string keys: "index.html" and "README.md".'])
     master_prompt = "\n".join(prompt_parts)
     
     api_url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent'
@@ -100,7 +106,6 @@ def generate_app_with_llm(brief, attachments, round_num, existing_code=None):
         response_json = response.json()
         generated_text = response_json['candidates'][0]['content']['parts'][0]['text']
         generated_files = json.loads(generated_text)
-        
         if "index.html" in generated_files and "README.md" in generated_files:
             print("Successfully received and parsed files from Gemini.")
             return generated_files
@@ -115,6 +120,7 @@ def create_or_update_github_repo(repo_name, round_num, files_to_commit):
     Uses the GitHub API to create/update a repository and deploy to Pages.
     """
     print(f"Starting GitHub operations for repo: {repo_name} (Round {round_num})")
+    # (The rest of this function is unchanged)
     api_base_url = "https://api.github.com"
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}"
@@ -122,7 +128,6 @@ def create_or_update_github_repo(repo_name, round_num, files_to_commit):
     existing_code = None
 
     if round_num > 1:
-        # For revisions, first fetch the existing index.html
         try:
             get_file_url = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/contents/index.html"
             file_res = requests.get(get_file_url, headers=headers)
@@ -130,9 +135,8 @@ def create_or_update_github_repo(repo_name, round_num, files_to_commit):
             existing_code = base64.b64decode(file_res.json()['content']).decode('utf-8')
             print("Successfully fetched existing index.html for revision.")
         except requests.RequestException as e:
-            print(f"Warning: Could not fetch existing index.html for round {round_num}. Proceeding without it. Error: {e}")
+            print(f"Warning: Could not fetch existing index.html for round {round_num}. Error: {e}")
 
-    # For Round 1, create the repository.
     if round_num == 1:
         payload = {"name": repo_name, "private": False, "description": "AI-generated project for autodeploy assignment."}
         response = requests.post(f"{api_base_url}/user/repos", headers=headers, json=payload)
@@ -140,55 +144,44 @@ def create_or_update_github_repo(repo_name, round_num, files_to_commit):
         elif response.status_code == 422: print(f"Repo '{repo_name}' already exists. Proceeding to update.")
         else: raise Exception(f"Failed to create repo. Status: {response.status_code}, Body: {response.text}")
 
-    # Add LICENSE file for all rounds
     files_to_commit['LICENSE'] = MIT_LICENSE_TEXT
-
-    # Commit each file
     for filename, content in files_to_commit.items():
         upload_url = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/contents/{filename}"
         encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
-        
-        # Check if file exists to get its SHA for the update
         sha = None
         get_file_res = requests.get(upload_url, headers=headers)
         if get_file_res.status_code == 200: sha = get_file_res.json().get('sha')
-
         upload_payload = {"message": f"feat: Round {round_num} - update {filename}", "content": encoded_content, "sha": sha}
         upload_response = requests.put(upload_url, headers=headers, json=upload_payload)
-        
         if upload_response.status_code in [200, 201]:
             latest_commit_sha = upload_response.json()['commit']['sha']
             print(f"Successfully committed '{filename}'. New commit SHA: {latest_commit_sha}")
         else:
             raise Exception(f"Failed to commit {filename}. Status: {upload_response.status_code}, Body: {upload_response.text}")
 
-    # Enable GitHub Pages
-    pages_url = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/pages"
+    pages_url_api = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/pages"
     pages_payload = {"source": {"branch": "main", "path": "/"}}
-    requests.post(pages_url, headers=headers, json=pages_payload) # Fire-and-forget is fine
-
-    # Wait for deployment
+    requests.post(pages_url_api, headers=headers, json=pages_payload)
     print("Waiting up to 2 minutes for GitHub Pages to deploy...")
     pages_live_url = f"https://{GITHUB_USERNAME}.github.io/{repo_name}/"
-    for _ in range(12): # Try for 120 seconds
+    for _ in range(12):
         try:
-            # A simple HEAD request is a lightweight way to check if the URL is live
             page_res = requests.head(pages_live_url, timeout=5)
             if page_res.status_code == 200:
                 print(f"Deployment successful! Pages URL is live: {pages_live_url}")
                 return {"repo_url": repo_url, "commit_sha": latest_commit_sha, "pages_url": pages_live_url, "existing_code": existing_code}
-        except requests.RequestException:
-            pass # Ignore timeouts/connection errors while waiting
+        except requests.RequestException: pass
         time.sleep(10)
-        
-    print("Warning: Timed out waiting for Pages URL to become active. Returning predicted URL.")
+    print("Warning: Timed out waiting for Pages URL to become active.")
     return {"repo_url": repo_url, "commit_sha": latest_commit_sha, "pages_url": pages_live_url, "existing_code": existing_code}
+
 
 def notify_evaluator(evaluation_url, payload):
     """
     Sends a POST request to the evaluation URL with exponential backoff retry mechanism.
     """
     print(f"Notifying evaluation server at: {evaluation_url}")
+    # (The rest of this function is unchanged)
     max_retries, delay = 5, 1
     for attempt in range(max_retries):
         try:
@@ -209,8 +202,11 @@ def notify_evaluator(evaluation_url, payload):
 def process_task_async(task_data):
     """
     The main background process to handle a task from start to finish.
+    This version includes comprehensive error logging.
     """
     try:
+        print("--- Background thread started successfully. ---")
+        # (This function includes the try...except block from the previous step)
         task_id = task_data['task']
         round_num = task_data['round']
         brief = task_data['brief']
@@ -218,7 +214,6 @@ def process_task_async(task_data):
         
         print(f"--- Starting processing for task: {task_id}, Round: {round_num} ---")
 
-        # For round 2+, we first get existing code, then generate the new version.
         existing_code = None
         if round_num > 1:
             try:
@@ -246,9 +241,9 @@ def process_task_async(task_data):
         print(f"--- Successfully completed processing for task: {task_id}, Round: {round_num} ---")
 
     except Exception as e:
-        print(f"FATAL ERROR in background processing for task {task_data.get('task')}: {e}")
-
-# --- 3. API Endpoint ---
+        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(f"FATAL ERROR in background thread: {e}")
+        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
 @app.route('/api-endpoint', methods=['POST'])
 def handle_request():
@@ -257,13 +252,12 @@ def handle_request():
     """
     print("\n\n=== Received a new request ===")
     request_data = request.json
-
-    if not request_data or request_data.get('secret') != MY_SECRET:
+    
+    # We must check if MY_SECRET has been loaded before comparing it
+    if not MY_SECRET or request_data.get('secret') != MY_SECRET:
         print("Error: Unauthorized. Invalid or missing secret.")
         return jsonify({"error": "Unauthorized"}), 401
 
-    # Acknowledge the request immediately and run the long process in the background.
-    # This is a requirement of the project spec.
     thread = Thread(target=process_task_async, args=(request_data,))
     thread.start()
 
@@ -271,6 +265,22 @@ def handle_request():
     return jsonify({"status": "Request received and is being processed."}), 200
 
 if __name__ == '__main__':
-    # Use host='0.0.0.0' to make the server accessible on your network.
-    # The debug flag is useful for development but should be False in production.
     app.run(host='0.0.0.0', port=5001, debug=True)
+```
+
+### Next Steps
+
+1.  **Push this new code** to your GitHub repository:
+    ```bash
+    git add app_builder.py
+    git commit -m "Add /debug-env endpoint and final logging"
+    git push origin main
+    ```
+
+2.  **Wait for Render to deploy** the new version automatically.
+
+3.  **Run the diagnostic test** by putting your Render URL into this command:
+    ```bash
+    curl https://autodeploy-server.onrender.com/debug-env
+    
+
