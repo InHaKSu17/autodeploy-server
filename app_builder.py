@@ -34,15 +34,19 @@ GITHUB_USERNAME = os.environ.get('GITHUB_USERNAME')
 
 MIT_LICENSE_TEXT = """
 MIT License
+
 Copyright (c) 2025 Your Name
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
+
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -242,20 +246,20 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=False)
 ```
 
-**Step 2: Push the Final Code**
+### Step 2: Push the Final Fix to GitHub
 
-Now, let's get this clean code onto GitHub.
+Now, let's upload this truly clean version.
 
 1.  Save the `app_builder.py` file.
 2.  Open your terminal in the project folder.
 3.  Run these three commands:
     ```bash
     git add app_builder.py
-    git commit -m "Fix syntax error and finalize server code"
+    git commit -m "Final fix: Use verified clean code from file block"
     git push origin main
     ```
 
-**Step 3: Watch the Deployment on Render**
+### Step 3: Watch the Final Deployment on Render
 
 Go back to your service on Render. It will automatically detect the new push and start a new deployment.
 
