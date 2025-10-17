@@ -9,10 +9,7 @@ from flask import Flask, request, jsonify
 
 # --- 1. STARTUP SELF-DIAGNOSTIC ---
 def check_environment_variables():
-    """
-    Checks for all required environment variables at startup.
-    If any are missing, it prints a clear error and exits.
-    """
+    """Checks for all required environment variables at startup."""
     print("--- Running Startup Environment Check ---")
     required_vars = ['MY_SECRET', 'GITHUB_TOKEN', 'GITHUB_USERNAME']
     missing_vars = [var for var in required_vars if not os.environ.get(var)]
@@ -24,12 +21,10 @@ def check_environment_variables():
             print(f"  - {var}")
         print("Please set these variables in the Render Environment tab and redeploy.")
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        # Exit the application with a failure code. Render will show it crashed.
         sys.exit(1)
         
     print("SUCCESS: All required environment variables are present.")
     
-# Run the check immediately when the script starts
 check_environment_variables()
 
 # --- 2. Configuration & Setup ---
@@ -67,22 +62,6 @@ def health_check():
     print("--- Health Check Endpoint Hit ---")
     return jsonify({"status": "ok", "message": "Server is running and healthy."}), 200
 
-@app.route('/debug-env', methods=['GET'])
-def debug_env():
-    """A public endpoint to safely check if environment variables are loaded."""
-    print("--- Running Debug Check ---")
-    token = os.environ.get('GITHUB_TOKEN')
-    report = {
-        "MY_SECRET": "Set" if os.environ.get('MY_SECRET') else "!!! MISSING !!!",
-        "GITHUB_TOKEN": "Set" if token else "!!! MISSING !!!",
-        "GITHUB_USERNAME": "Set" if os.environ.get('GITHUB_USERNAME') else "!!! MISSING !!!",
-    }
-    if token and token.startswith('ghp_'):
-        report["GITHUB_TOKEN_FORMAT"] = "Looks Correct (starts with ghp_)"
-    elif token:
-        report["GITHUB_TOKEN_FORMAT"] = "!!! INCORRECT FORMAT !!!"
-    return jsonify(report), 200
-
 @app.route('/api-endpoint', methods=['POST'])
 def handle_request():
     """The main endpoint that receives the project brief."""
@@ -103,7 +82,6 @@ def process_task_async(task_data):
     try:
         print("--- Background thread started successfully. ---")
         task_id = task_data['task']
-        # ... (The rest of your functions are unchanged) ...
         round_num = task_data['round']
         brief = task_data['brief']
         attachments = task_data.get('attachments', [])
@@ -141,75 +119,148 @@ def process_task_async(task_data):
         print(f"FATAL ERROR in background thread: {e}")
         print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
-# (All other functions like generate_app_with_llm, create_or_update_github_repo, etc. go here)
 def generate_app_with_llm(brief, attachments, round_num, existing_code=None):
-    print("Connecting to Gemini API...")
-    # ... Omitted for brevity, but this function should be here in your file
-    return {"index.html": "<h1>Hello</h1>", "README.md": "# Test"}
+    """Calls the Gemini API to generate application code based on a brief."""
+    print("Connecting to Gemini API to generate code...")
+    decoded_attachments = []
+    for attachment in attachments:
+        header, encoded_data = attachment['url'].split(',', 1)
+        decoded_content = base64.b64decode(encoded_data).decode('utf-8', errors='ignore')
+        decoded_attachments.append({"name": attachment['name'], "content": decoded_content})
+
+    if round_num > 1 and existing_code:
+        prompt_task = (f"Your task is to modify the provided 'index.html' file based on the new brief. The 'README.md' should also be updated to reflect the changes.\n\n--- NEW USER BRIEF ---\n{brief}\n------------------\n\n--- EXISTING index.html ---\n{existing_code}\n-------------------------\n")
+    else:
+        prompt_task = f"Your task is to generate two files: 'index.html' and 'README.md', based on the user's brief.\n--- USER BRIEF ---\n{brief}\n------------------\n"
+
+    prompt_parts = ["You are an expert web developer specializing in creating single-file, production-ready applications.", prompt_task]
+    if decoded_attachments:
+        prompt_parts.append("The application must use the following attached files:")
+        for att in decoded_attachments:
+            prompt_parts.append(f"\n--- FILE: {att['name']} ---\n{att['content']}\n----------------------\n")
+
+    prompt_parts.extend(["The 'index.html' file must be a single, complete HTML5 document. All CSS must be in a <style> tag and all JavaScript in a <script> tag, unless a CDN is explicitly required.", "The 'README.md' must be professional and comprehensive.", "IMPORTANT: You must respond with ONLY a raw JSON object, without any surrounding text, explanations, or markdown formatting.", 'The JSON object must have two string keys: "index.html" and "README.md".'])
+    master_prompt = "\n".join(prompt_parts)
+    
+    api_url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent'
+    payload = {"contents": [{"parts": [{"text": master_prompt}]}]}
+    headers = {'Content-Type': 'application/json'}
+
+    try:
+        response = requests.post(api_url, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+        response_json = response.json()
+        generated_text = response_json['candidates'][0]['content']['parts'][0]['text']
+        generated_files = json.loads(generated_text)
+        if "index.html" in generated_files and "README.md" in generated_files:
+            print("Successfully received and parsed files from Gemini.")
+            return generated_files
+        else:
+            raise ValueError("LLM output did not contain the expected file keys.")
+    except (requests.RequestException, KeyError, IndexError, json.JSONDecodeError, ValueError) as e:
+        print(f"An error occurred with the LLM API call or parsing: {e}")
+        return None
 
 def create_or_update_github_repo(repo_name, round_num, files_to_commit):
-    print(f"Starting GitHub operations for repo: {repo_name}")
-    # ... Omitted for brevity, but this function should be here in your file
-    return {"repo_url": "url", "commit_sha": "sha", "pages_url": "url", "existing_code": "code"}
+    """Uses the GitHub API to create/update a repository and deploy to Pages."""
+    print(f"Starting GitHub operations for repo: {repo_name} (Round {round_num})")
+    api_base_url = "https://api.github.com"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}"
+    latest_commit_sha = None
+    existing_code = None
+
+    if round_num > 1:
+        try:
+            get_file_url = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/contents/index.html"
+            file_res = requests.get(get_file_url, headers=headers)
+            file_res.raise_for_status()
+            existing_code = base64.b64decode(file_res.json()['content']).decode('utf-8')
+            print("Successfully fetched existing index.html for revision.")
+        except requests.RequestException as e:
+            print(f"Warning: Could not fetch existing index.html for round {round_num}. Error: {e}")
+
+    if round_num == 1:
+        payload = {"name": repo_name, "private": False, "description": "AI-generated project for autodeploy assignment."}
+        response = requests.post(f"{api_base_url}/user/repos", headers=headers, json=payload)
+        if response.status_code == 201: print(f"Successfully created new repo: {repo_name}")
+        elif response.status_code == 422: print(f"Repo '{repo_name}' already exists. Proceeding to update.")
+        else: raise Exception(f"Failed to create repo. Status: {response.status_code}, Body: {response.text}")
+
+    files_to_commit['LICENSE'] = MIT_LICENSE_TEXT
+    for filename, content in files_to_commit.items():
+        upload_url = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/contents/{filename}"
+        encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+        sha = None
+        get_file_res = requests.get(upload_url, headers=headers)
+        if get_file_res.status_code == 200: sha = get_file_res.json().get('sha')
+        upload_payload = {"message": f"feat: Round {round_num} - update {filename}", "content": encoded_content, "sha": sha}
+        upload_response = requests.put(upload_url, headers=headers, json=upload_payload)
+        if upload_response.status_code in [200, 201]:
+            latest_commit_sha = upload_response.json()['commit']['sha']
+            print(f"Successfully committed '{filename}'. New commit SHA: {latest_commit_sha}")
+        else:
+            raise Exception(f"Failed to commit {filename}. Status: {upload_response.status_code}, Body: {upload_response.text}")
+
+    pages_url_api = f"{api_base_url}/repos/{GITHUB_USERNAME}/{repo_name}/pages"
+    pages_payload = {"source": {"branch": "main", "path": "/"}}
+    requests.post(pages_url_api, headers=headers, json=pages_payload)
+    print("Waiting up to 2 minutes for GitHub Pages to deploy...")
+    pages_live_url = f"https://{GITHUB_USERNAME}.github.io/{repo_name}/"
+    for _ in range(12):
+        try:
+            page_res = requests.head(pages_live_url, timeout=5)
+            if page_res.status_code == 200:
+                print(f"Deployment successful! Pages URL is live: {pages_live_url}")
+                return {"repo_url": repo_url, "commit_sha": latest_commit_sha, "pages_url": pages_live_url, "existing_code": existing_code}
+        except requests.RequestException: pass
+        time.sleep(10)
+    print("Warning: Timed out waiting for Pages URL to become active.")
+    return {"repo_url": repo_url, "commit_sha": latest_commit_sha, "pages_url": pages_live_url, "existing_code": existing_code}
 
 def notify_evaluator(evaluation_url, payload):
+    """Sends a POST request to the evaluation URL with exponential backoff retry."""
     print(f"Notifying evaluation server at: {evaluation_url}")
-    # ... Omitted for brevity, but this function should be here in your file
-    return
+    max_retries, delay = 5, 1
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(evaluation_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15)
+            response.raise_for_status()
+            print(f"Successfully notified evaluator. Server responded with {response.status_code}.")
+            return
+        except requests.exceptions.RequestException as e:
+            print(f"Attempt {attempt + 1} to notify evaluator failed: {e}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+                delay *= 2
+            else:
+                print("Could not notify the evaluation server after multiple retries.")
+                break
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=False)
 ```
-*(Note: I've included placeholder stubs for the core logic functions to keep the example clean, but you should use the full functions from our previous conversations in your final file.)*
 
----
+**Step 2: Push the Final Code**
 
-### Part 2: A Clean Slate Deployment on Render
+Now, let's get this clean code onto GitHub.
 
-To avoid any old, broken settings, we will delete the old service and create a new one.
-
-1.  **Delete the Old Service:** Go to your Render Dashboard, find your `autodeploy-server` service, click on it, go to the **"Settings"** tab, scroll to the bottom, and click the red **"Delete Service"** button.
-2.  **Create a New Service:** Click **New +** -> **Web Service** and connect your `autodeploy-server` GitHub repository again.
-3.  **Configure It:** Use the same settings as before.
-    * **Name:** `autodeploy-server-v2` (use a new name)
-    * **Runtime:** `Python 3`
-    * **Build Command:** `pip install -r requirements.txt`
-    * **Start Command:** `gunicorn app_builder:app`
-4.  **CRITICAL STEP: Set Environment Variables:** Go to the **"Environment"** tab. **Triple-check every character** as you add your three secrets: `MY_SECRET`, `GITHUB_TOKEN`, and `GITHUB_USERNAME`. Ensure there are no extra spaces.
-5.  Click **"Create Web Service"**.
-
----
-
-### Part 3: The Foolproof Testing Plan
-
-This is a two-step process. Only proceed to step 2 if step 1 is successful.
-
-#### Test 1: The Health Check (Is the server running?)
-
-This test checks if your server started correctly without crashing.
-
-* **Action:** Run this simple `curl` command in your terminal, replacing the URL with your new one.
+1.  Save the `app_builder.py` file.
+2.  Open your terminal in the project folder.
+3.  Run these three commands:
     ```bash
-    curl https://autodeploy-server-v2.onrender.com/
-    ```
-* **Expected Result:** You should see this immediately:
-    ```json
-    {"status":"ok","message":"Server is running and healthy."}
+    git add app_builder.py
+    git commit -m "Fix syntax error and finalize server code"
+    git push origin main
     ```
 
-* **If it fails (e.g., "connection closed"):**
-    1.  Go to the **"Logs"** tab for your new service on Render.
-    2.  You will see the `FATAL ERROR` message from our new startup check, telling you exactly which environment variable is wrong.
-    3.  Go to the "Environment" tab, fix the typo, and Render will redeploy. Try the health check again.
+**Step 3: Watch the Deployment on Render**
 
-#### Test 2: The Functional Test (Does the app work?)
+Go back to your service on Render. It will automatically detect the new push and start a new deployment.
 
-Once the Health Check passes, your server is running. Now, test the actual assignment logic.
-
-* **Action:** Run the full `curl` command in a single line. (Use the correct version for your shell from our previous conversation, and remember to replace the URL and your secret password).
-
-    *For PowerShell/macOS/Linux:*
-    ```bash
-    curl -X POST https://autodeploy-server-v2.onrender.com/api-endpoint -H "Content-Type: application/json" -d '{"email": "final-test@example.com", "secret": "YOUR_SECRET_PASSWORD_HERE", "task": "final-test-run", "round": 1, "nonce": "final-nonce-456", "brief": "Final test with new code.", "evaluation_url": "https://httpbin.org/post"}'
-    
+This time, the `SyntaxError` will be gone. The first thing you should see in the **Logs** is:
+```
+--- Running Startup Environment Check ---
+SUCCESS: All required environment variables are present.
 
